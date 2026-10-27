@@ -1,0 +1,1458 @@
+{
+  "name": "Stop invoice fraud before payment with PaperOffice AI and human approval",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## Stop invoice fraud before payment\n\n**Who it is for:** accounts payable teams, controllers and ERP integrators who need a payment gate against changed bank details, duplicates and over-billing.\n\n**What it does:** every invoice is archived and checked in [PaperOffice AI](https://paperoffice.ai/en/), then **a human decides**. This workflow never releases a payment.\n\n### How it works\n1. **Upload invoice** → **Archive invoice** stores the PDF, **Extract invoice** reads it.\n2. Full-text searches in your workspace find earlier invoices of the supplier, the order, the delivery note and the same invoice number.\n3. **Evaluate checks**: IBAN against earlier invoices (match / changed / unknown), duplicates, order and delivery note. Anything unclear is a finding.\n4. **Add check report** writes the result to the document, **Queue for human review** creates the HITL task.\n5. **Review decision** (signed webhook) tags the invoice *ready for payment* or *blocked*.\n\n### Set up (about 10 minutes)\n1. Bearer credential with your PaperOffice AI token ([Account → API](https://app.paperoffice.ai/en/paperoffice-account/api)) in all PaperOffice nodes.\n2. **Settings**: workspace ID and HITL agent UUID.\n3. In the HITL agent, set the webhook URL to the production URL of **Review decision**; put the signing secret into **Compute signature**.\n\n### Customize\n- Optional deep check with AI-DMS Ultra (billed per page).\n- Swap the form for Gmail, Outlook or Google Drive. API reference: [llms.txt](https://api.paperoffice.ai/latest/docs/llms.txt)",
+        "height": 900,
+        "width": 560
+      },
+      "id": "82202cec-9287-4747-a32f-1257628d91cb",
+      "name": "Main note",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -900,
+        -320
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## 1 · Archive and read\nThe PDF is stored in PaperOffice AI first, then read by document AI.",
+        "height": 440,
+        "width": 1260,
+        "color": 7
+      },
+      "id": "1a03ac30-a6d4-4d41-a5df-a795938c684c",
+      "name": "Section 1",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -300,
+        -320
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## 2 · Evidence from your DMS\nEarlier invoices, order, delivery note and same invoice number are found by full-text search in your workspace.",
+        "height": 740,
+        "width": 1300,
+        "color": 7
+      },
+      "id": "0d48ac23-5143-490e-a12c-57d79353d8c3",
+      "name": "Section 2",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        1000,
+        -320
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## 3 · Report and human review\nThe report is stored on the document; every invoice goes to the HITL queue. Nothing is paid here.",
+        "height": 740,
+        "width": 1280,
+        "color": 7
+      },
+      "id": "04170912-2775-419e-af59-f13027cd41aa",
+      "name": "Section 3",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        2340,
+        -320
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## 4 · Decision webhook\nSigned by PaperOffice AI. Only an approval tags the invoice \"ready for payment\".",
+        "height": 420,
+        "width": 2040,
+        "color": 7
+      },
+      "id": "f3f7c5a8-5e89-4586-a670-cb8de4a716fb",
+      "name": "Section 4",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -300,
+        520
+      ]
+    },
+    {
+      "parameters": {
+        "formTitle": "Check an invoice before payment",
+        "formDescription": "Upload one invoice PDF. It is archived and checked in PaperOffice AI and then sent to a reviewer. No payment is released automatically.",
+        "path": "check-invoice-before-payment",
+        "formFields": {
+          "values": [
+            {
+              "fieldLabel": "Invoice",
+              "fieldName": "invoice",
+              "fieldType": "file",
+              "requiredField": true,
+              "multipleFiles": false,
+              "acceptFileTypes": ".pdf"
+            },
+            {
+              "fieldLabel": "Deep check with AI-DMS Ultra",
+              "fieldName": "Deep check with AI-DMS Ultra",
+              "fieldType": "dropdown",
+              "requiredField": true,
+              "fieldOptions": {
+                "values": [
+                  {
+                    "option": "No"
+                  },
+                  {
+                    "option": "Yes (billed per page)"
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "4f2e202f-c497-4d83-accd-76d8b86b06e9",
+      "name": "Upload invoice",
+      "type": "n8n-nodes-base.formTrigger",
+      "typeVersion": 2.6,
+      "position": [
+        -260,
+        -120
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "language": "javaScript",
+        "jsCode": "// ── Your settings ────────────────────────────────────────────────────────────\nconst WORKSPACE_ID = 0;        // PaperOffice workspace with invoices, purchase orders and delivery notes\nconst HITL_AGENT_UUID = '';    // PaperOffice app → Workflow AI → HITL agents → your agent → UUID\n// ─────────────────────────────────────────────────────────────────────────────\n// Checked before any API call: a rejected request still costs the minimum price.\nif (!(Number(WORKSPACE_ID) > 0)) throw new Error('Enter your PaperOffice workspace ID in the \"Settings\" node.');\nif (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(HITL_AGENT_UUID)) {\n  throw new Error('Enter the UUID of your HITL agent in the \"Settings\" node.');\n}\nconst bin = $input.item.binary || {};\nconst key = Object.keys(bin)[0];\nif (!key) throw new Error('No PDF was uploaded.');\nconst name = String(bin[key].fileName || 'invoice.pdf');\nif (!/\\.pdf$/i.test(name) && String(bin[key].mimeType || '') !== 'application/pdf') throw new Error('Please upload a PDF.');\nconst deep = /^yes/i.test(String($json['Deep check with AI-DMS Ultra'] || ''));\nreturn { json: { workspace_id: Number(WORKSPACE_ID), agent_uuid: HITL_AGENT_UUID, deep_check: deep, file_name: name }, binary: { invoice: bin[key] } };\n"
+      },
+      "id": "73d34642-4f16-4fda-a33c-8c424ebff4d5",
+      "name": "Settings",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -40,
+        -120
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.paperoffice.ai/latest/documents/document-put",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBearerAuth",
+        "sendBody": true,
+        "contentType": "multipart-form-data",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "parameterType": "formBinaryData",
+              "name": "file",
+              "inputDataFieldName": "invoice"
+            },
+            {
+              "parameterType": "formData",
+              "name": "workspace_id",
+              "value": "={{ $json.workspace_id }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 120000,
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true,
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "id": "19696b95-d5dc-444b-a9cb-d691a2d7f867",
+      "name": "Archive invoice",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        180,
+        -120
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "language": "javaScript",
+        "jsCode": "// Reads results[0].pofid of the upload. Without it nothing else may run.\nconst body = ($json.body !== undefined ? $json.body : $json) || {};\nconst code = Number($json.statusCode || 0);\nif (code === 401 || code === 403) throw new Error('PaperOffice AI rejected the API key (HTTP ' + code + '). Create a User token (po_ut_…) under Account → API.');\nconst r = Array.isArray(body.results) ? body.results[0] : null;\nif (!r || !r.pofid) throw new Error('Upload failed: ' + (body.message || body.code || ('HTTP ' + code)));\nreturn { json: { ...$('Settings').item.json, pofid: r.pofid, documents_id: r.documents_id } };\n"
+      },
+      "id": "b58a406a-6bdd-4268-ac6d-97c4336dc231",
+      "name": "Check upload",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        400,
+        -120
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.paperoffice.ai/latest/job/add/workflow",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBearerAuth",
+        "sendBody": true,
+        "contentType": "form-urlencoded",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "pofid",
+              "value": "={{ $json.pofid }}"
+            },
+            {
+              "name": "idp_collection",
+              "value": "invoice"
+            },
+            {
+              "name": "model",
+              "value": "basic-pro-max"
+            },
+            {
+              "name": "client_wait",
+              "value": "true"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 300000,
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true,
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "id": "1b8ba0ce-7e28-43e6-ab89-f34e323fbca3",
+      "name": "Extract invoice",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        620,
+        -120
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "language": "javaScript",
+        "jsCode": "// Invoice fields from result.pages_idp[].suggested_fields (object or array form). A job that is still\n// running (HTTP 202) is NOT waited for here: the invoice then goes to review with \"extraction unknown\".\nconst s = $('Check upload').item.json;\nconst body = ($json.body !== undefined ? $json.body : $json) || {};\nconst payload = body.result || body.job_result || {};\nconst pages = Array.isArray(payload.pages_idp) ? payload.pages_idp : [];\nfunction raw(key) {\n  for (const p of pages) {\n    const sf = p && p.suggested_fields;\n    if (!sf) continue;\n    const f = Array.isArray(sf) ? sf.find((x) => x && (x.key === key || x.category === key)) : sf[key];\n    if (f === undefined || f === null) continue;\n    const v = typeof f === 'object' ? f.value : f;\n    if (v === 'VALUE_MISSING' || v === undefined || v === null || String(v).trim() === '') continue;\n    return { value: v, raw: typeof f === 'object' && f.value_raw != null ? f.value_raw : v };\n  }\n  return null;\n}\nconst text = (k) => { const f = raw(k); return f ? String(f.value).trim() : ''; };\nconst num = (k) => { const f = raw(k); if (!f) return null; const m = /-?\\d+(?:\\.\\d+)?/.exec(String(f.raw).replace(',', '.')); return m ? Number(m[0]) : null; };\nconst lineItems = (() => { const f = raw('_line_items'); const v = f ? f.value : null; if (Array.isArray(v)) return v; if (v && Array.isArray(v.value)) return v.value; try { const j = JSON.parse(v); return Array.isArray(j) ? j : (j && Array.isArray(j.value) ? j.value : []); } catch (e) { return []; } })();\nreturn { json: {\n  ...s,\n  extracted: pages.length > 0,\n  supplier: text('_supplier_name'),\n  supplier_vat_id: text('_supplier_vat_id'),\n  invoice_number: text('_invoice_number'),\n  invoice_date: text('_invoice_date'),\n  due_date: text('_payment_due_date'),\n  total_amount: num('_total_amount'),\n  currency: text('_currency') || 'EUR',\n  iban: text('_creditor_iban').replace(/\\s+/g, '').toUpperCase(),\n  order_number: text('__document__data__metadata__reference_number') || text('_document__data__metadata__reference_number'),\n  line_items: lineItems.map((it) => ({ code: String(it.item_code || it.sku || it.article_number || '').trim(), quantity: Number(String(it.quantity ?? '').replace(',', '.')) || 0, total: Number(String(it.total_price ?? it.total_price_net ?? '').replace(',', '.')) || 0 })),\n} };\n"
+      },
+      "id": "4ca3281f-1476-4056-a398-1c93cea8443d",
+      "name": "Read invoice",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        840,
+        -120
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.paperoffice.ai/latest/documents/documents-list",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBearerAuth",
+        "sendBody": true,
+        "contentType": "form-urlencoded",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "workspace_id",
+              "value": "={{ $('Read invoice').item.json.workspace_id }}"
+            },
+            {
+              "name": "global_search",
+              "value": "={{ $('Read invoice').item.json.supplier || 'no-supplier-name' }}"
+            },
+            {
+              "name": "search_mode",
+              "value": "fulltext"
+            },
+            {
+              "name": "limit",
+              "value": "20"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 60000,
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true,
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "id": "8aef7d92-b781-4b33-a671-eae6c97ac5aa",
+      "name": "Find earlier invoices",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1060,
+        -120
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.paperoffice.ai/latest/documents/documents-list",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBearerAuth",
+        "sendBody": true,
+        "contentType": "form-urlencoded",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "workspace_id",
+              "value": "={{ $('Read invoice').item.json.workspace_id }}"
+            },
+            {
+              "name": "global_search",
+              "value": "={{ $('Read invoice').item.json.order_number || 'no-order-number' }}"
+            },
+            {
+              "name": "search_mode",
+              "value": "fulltext"
+            },
+            {
+              "name": "limit",
+              "value": "20"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 60000,
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true,
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "id": "a49a9e96-55e2-4aa0-aea1-7d642a789faf",
+      "name": "Find order and delivery note",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1280,
+        -120
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.paperoffice.ai/latest/documents/documents-list",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBearerAuth",
+        "sendBody": true,
+        "contentType": "form-urlencoded",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "workspace_id",
+              "value": "={{ $('Read invoice').item.json.workspace_id }}"
+            },
+            {
+              "name": "global_search",
+              "value": "={{ $('Read invoice').item.json.invoice_number || 'no-invoice-number' }}"
+            },
+            {
+              "name": "search_mode",
+              "value": "fulltext"
+            },
+            {
+              "name": "limit",
+              "value": "20"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 60000,
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true,
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "id": "1edf5214-fe83-43d8-aa09-39af6d047d8f",
+      "name": "Find same invoice number",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1500,
+        -120
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.paperoffice.ai/latest/documents/duplicate-check",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBearerAuth",
+        "sendBody": true,
+        "contentType": "form-urlencoded",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "pofid",
+              "value": "={{ $('Read invoice').item.json.pofid }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 60000,
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true,
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "id": "7ef3e91f-da19-4cc8-ac0d-3b937cb71677",
+      "name": "Duplicate check",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1720,
+        -120
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "// Earlier invoices of the supplier (up to 5) and documents that mention the order number (up to 6) whose OCR text is read next.\nconst inv = $('Read invoice').item.json;\nconst list = (node) => { const b = ($(node).item.json.body) || {}; return Array.isArray(b.documents) ? b.documents : []; };\nconst out = [];\nconst seen = new Set([inv.pofid]);\n// Each document once. Other invoices with the same order number also match the order search, so it reads up to 6.\nconst add = (d, role) => { if (d.pofid && !seen.has(d.pofid)) { seen.add(d.pofid); out.push({ json: { pofid: d.pofid, role, file_name: d.file_name || '' } }); } };\nlist('Find earlier invoices').filter((d) => d.pofid && d.pofid !== inv.pofid).slice(0, 5).forEach((d) => add(d, 'history'));\nlist('Find order and delivery note').filter((d) => d.pofid && !seen.has(d.pofid)).slice(0, 6).forEach((d) => add(d, 'order'));\nif (out.length === 0) out.push({ json: { pofid: inv.pofid, role: 'self', file_name: inv.file_name } });\nreturn out;\n"
+      },
+      "id": "0dac525d-271e-4a8b-ad5f-d0645275f555",
+      "name": "Pick documents to read",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1060,
+        160
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "https://api.paperoffice.ai/latest/documents/ocr-get",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBearerAuth",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "pofid",
+              "value": "={{ $json.pofid }}"
+            },
+            {
+              "name": "format",
+              "value": "text"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 60000,
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true,
+              "responseFormat": "text"
+            }
+          }
+        }
+      },
+      "id": "b4f29ea9-af40-4284-a166-f5e4d9bdc078",
+      "name": "Read document text",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1280,
+        160
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "// IBANs of earlier invoices (MOD 97 valid only) and the purchase order / delivery note among the order documents.\nconst inv = $('Read invoice').first().json;\nconst plan = $('Pick documents to read').all().map((i) => i.json);\n// ocr-get answers with plain text or with JSON {data: \"...\"}; never search in a JSON string (escaped line breaks hide word boundaries)\nconst texts = $input.all().map((i) => { const b = (i.json.body !== undefined ? i.json.body : i.json) || {}; if (typeof b === 'string') { try { const j = JSON.parse(b); if (j && typeof j.data === 'string') return j.data; } catch (x) { /* plain text */ } return b; } return String(b.text || b.ocr_text || b.content || b.data || JSON.stringify(b)); });\nfunction ibanOk(s) { const r = s.slice(4) + s.slice(0, 4); let m = 0; for (const ch of r) { const v = /\\d/.test(ch) ? ch : String(ch.charCodeAt(0) - 55); for (const c of v) m = (m * 10 + Number(c)) % 97; } return m === 1; }\nfunction ibans(t) { const out = new Set(); const re = /\\b([A-Z]{2}\\d{2}(?:[ ]?[A-Z0-9]{4}){2,7}(?:[ ]?[A-Z0-9]{1,3})?)\\b/g; let m; while ((m = re.exec(String(t).toUpperCase()))) { const s = m[1].replace(/\\s+/g, ''); if (s.length >= 15 && s.length <= 34 && ibanOk(s)) out.add(s); } return [...out]; }\nconst history_ibans = new Set(); let history_docs = 0; let po = null; let dn = null; let po_total = null; const billed = [];\n// Largest money amount in a text = the gross total (OCR may put the label before or after the number). \"6.012,48\" and \"6,012.48\" both work.\nconst max_amount = (t) => { let best = null; const re = /(?:€|EUR|\\$|£|CHF)?\\s?(\\d{1,3}(?:[.,\\s]\\d{3})*(?:[.,]\\d{2})|\\d+[.,]\\d{2})(?!\\d)/g; let m;\n  while ((m = re.exec(String(t)))) { let v = m[1].replace(/\\s/g, ''); const dec = v.slice(-3, -2); v = v.slice(0, -3).replace(/[.,]/g, '') + '.' + v.slice(-2); if (dec !== '.' && dec !== ',') continue; const n = Number(v); if (Number.isFinite(n) && (best === null || n > best)) best = n; }\n  return best; };\n// Compare numbers without case, spaces, dashes, dots or slashes (OCR writes \"NS PO 2026 0412\" as well).\n// Short numbers (under 5 characters or without a digit) must appear as a whole word instead, so \"4711\" does not match a phone number.\nconst norm = (v) => String(v || '').toUpperCase().replace(/[\\s\\-_.\\/]+/g, '');\nconst order_key = norm(inv.order_number);\nconst invoice_key = norm(inv.invoice_number);\nconst esc = (v) => String(v).replace(/[.*+?^(){}|[\\]\\\\$]/g, '\\\\$&');\nconst names_order = (t) => order_key.length >= 5 && /\\d/.test(order_key)\n  ? norm(t).includes(order_key)\n  : new RegExp('(^|[^A-Za-z0-9])' + esc(String(inv.order_number).trim()) + '($|[^A-Za-z0-9])', 'i').test(t);\nplan.forEach((p, i) => {\n  const t = texts[i] || '';\n  // Belege mit derselben Rechnungsnummer (Dubletten) zählen nicht als Vergleichsbasis für die IBAN\n  if (p.role === 'history' && !(inv.invoice_number && t.includes(inv.invoice_number))) { history_docs++; ibans(t).forEach((x) => history_ibans.add(x)); }\n  // Order and delivery note: the document type is the title word that comes FIRST in the text (footers such as\n  // \"quote the order number on delivery note and invoice\" come later). An invoice never counts as an order, even when it\n  // names the order number (\"Ihre Bestellung NS-PO-…\"). Order and delivery note must name the order number of this invoice.\n  const first = (re) => { const m = re.exec(t.slice(0, 1500)); return m ? m.index : Infinity; };\n  // Invoice-like: invoices and credit notes. Within the first 300 characters the invoice title wins, so a supplier named\n  // \"Ordine Srl\" above \"FATTURA\" is still an invoice.\n  let at_invoice = Math.min(first(/\\b(invoice|rechnung|factura|facture|fattura|faktura|faktúra|fatura|factuur|gutschrift|credit note|avoir|nota di credito|nota de crédito|korekta|dobropis)\\b(?!\\s*(address|adresse|to)\\b)/i), invoice_key !== '' && norm(t.slice(0, 600)).includes(invoice_key) ? -1 : Infinity);\n  if (at_invoice < 300) at_invoice = -1;\n  const at_dn = first(/delivery note|lieferschein|bon de livraison|albar[aá]n|bolla di consegna|dowód dostawy|dodací list/i);\n  const at_po = first(/purchase order|bestellung|commande|pedido|ordine|zamówienie|objednávka/i);\n  if (order_key === '' || !names_order(t)) return;\n  if (at_invoice < Math.min(at_dn, at_po)) {\n    // v5: another invoice (not a credit note, not a copy of this invoice number) that bills the same order\n    const credit = /\\b(gutschrift|credit note|nota di credito|nota de crédito)\\b|\\b(AVOIR|KOREKTA|DOBROPIS)\\b/i.test(t.slice(0, 600));\n    const num = (t.match(/(?:invoice\\s*(?:number|no\\.?|#)|rechnungs?\\s*(?:nummer|nr\\.?)|factura\\s*(?:n[º°o]\\.?|número)|facture\\s*n[°o]|fattura\\s*n\\.?)\\s*[:#]?\\s*([A-Z0-9][A-Z0-9\\-\\/\\.]{2,30})/i) || [])[1] || '';\n    if (!credit && !(invoice_key !== '' && (norm(num) === invoice_key || norm(t.slice(0, 600)).includes(invoice_key)))) {\n      billed.push({ pofid: p.pofid, file_name: p.file_name || '', invoice_number: num, total: max_amount(t) });\n    }\n    return;\n  }\n  if (!dn && at_dn < at_po) dn = p.pofid;\n  else if (!po && at_po < at_dn) { po = p.pofid; po_total = max_amount(t); }\n});\n// One entry per invoice number (scans or copies of the same earlier invoice count once)\nconst billed_by = [];\nfor (const b of billed) { const k = norm(b.invoice_number) || b.pofid; if (!billed_by.some((x) => (norm(x.invoice_number) || x.pofid) === k)) billed_by.push(b); }\nreturn [{ json: { ...inv, history_docs, history_ibans: [...history_ibans], po_pofid: po, dn_pofid: dn, po_total, billed_by } }];\n"
+      },
+      "id": "61c13597-9c21-49a5-a430-9129eed1c153",
+      "name": "Collect evidence",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1500,
+        160
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "2fbcaa37-9ee5-4918-a2a8-ed72477a3c6b",
+              "leftValue": "={{ Boolean($json.po_pofid && $json.dn_pofid) }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "b1f4bfa1-8276-4387-aa22-500259d59034",
+      "name": "Order and delivery note found?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1720,
+        160
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.paperoffice.ai/latest/job/add/workflow",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBearerAuth",
+        "sendBody": true,
+        "contentType": "form-urlencoded",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "pofid",
+              "value": "={{ $json.po_pofid }}"
+            },
+            {
+              "name": "idp_collection",
+              "value": "purchase_order"
+            },
+            {
+              "name": "model",
+              "value": "basic-pro-max"
+            },
+            {
+              "name": "client_wait",
+              "value": "true"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 300000,
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true,
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "id": "3a59660e-e986-46c2-a634-bfc94d215ceb",
+      "name": "Extract order",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1940,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.paperoffice.ai/latest/job/add/workflow",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBearerAuth",
+        "sendBody": true,
+        "contentType": "form-urlencoded",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "pofid",
+              "value": "={{ $('Collect evidence').item.json.dn_pofid }}"
+            },
+            {
+              "name": "idp_collection",
+              "value": "delivery_note"
+            },
+            {
+              "name": "model",
+              "value": "basic-pro-max"
+            },
+            {
+              "name": "client_wait",
+              "value": "true"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 300000,
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true,
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "id": "121d2373-43ed-49d6-aab5-339a053154a2",
+      "name": "Extract delivery note",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2160,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "// One result per check: ok | finding | unknown. unknown counts as a finding (fail-closed). Never \"approve\" here.\nconst e = $('Collect evidence').first().json;\nconst body = (n) => { try { const j = $(n).first().json; return (j.body !== undefined ? j.body : j) || {}; } catch (x) { return null; } };\nconst fields = (b) => { const p = (b && (b.result || b.job_result)) || {}; const pages = Array.isArray(p.pages_idp) ? p.pages_idp : []; return pages; };\n// Quantities come as \"10\", \"10 pcs\" or \"2,5 kg\": take the first number\nconst qty = (v) => { const m = String(v ?? '').match(/-?\\d+(?:[.,]\\d+)?/); return m ? Number(m[0].replace(',', '.')) : 0; };\nconst idpItems = (b) => { for (const pg of fields(b)) { const sf = pg.suggested_fields || {}; const f = Array.isArray(sf) ? sf.find((x) => x && (x.key === '_line_items' || x.category === '_line_items')) : sf._line_items; let v = f && typeof f === 'object' ? f.value : f; if (typeof v === 'string') { try { v = JSON.parse(v); } catch (x) { v = null; } } if (v && Array.isArray(v.value)) v = v.value; if (Array.isArray(v)) return v.map((it) => ({ code: String(it.item_code || it.sku || it.article_number || '').trim().toUpperCase(), quantity: qty(it.quantity ?? it.qty_shipped ?? it.qty_delivered ?? it.quantity_delivered ?? it.qty) })); } return null; };\nconst findings = [];\nconst checks = {};\n// 1. Extraction\nchecks.extraction = e.extracted ? 'ok' : 'unknown';\nif (!e.extracted) findings.push('Invoice data could not be read completely (job still running or failed).');\n// 2. IBAN (Begriffe wie c0: iban_check.status, check_id iban_changed)\nlet iban_status = 'unknown';\nif (e.iban && e.history_ibans.length > 0) iban_status = e.history_ibans.includes(e.iban) ? 'match' : 'changed';\nchecks.iban = iban_status === 'match' ? 'ok' : (iban_status === 'changed' ? 'finding' : 'unknown');\nif (iban_status === 'changed') findings.push('IBAN ' + e.iban + ' differs from earlier invoices of ' + (e.supplier || 'this supplier') + ' (' + e.history_ibans.join(', ') + '). Confirm the bank details with a known contact before paying.');\nif (iban_status === 'unknown') findings.push(e.iban ? 'No earlier invoice of this supplier found to compare the IBAN (new supplier?).' : 'No IBAN found on the invoice.');\n// 3. Duplicate\nconst dup = body('Duplicate check') || {};\nconst same = ((body('Find same invoice number') || {}).documents || []).filter((d) => d.pofid && d.pofid !== e.pofid);\nconst dupHit = Boolean(dup.is_duplicate || (Array.isArray(dup.duplicates) && dup.duplicates.length) || same.length);\nchecks.duplicate = dupHit ? 'finding' : (e.invoice_number ? 'ok' : 'unknown');\nif (dupHit) findings.push('Possible duplicate: invoice number ' + (e.invoice_number || '?') + ' already exists in the workspace.');\n// 4. Order and delivery note\nlet match = 'no_po_reference';\nlet poItems = null;\nlet dnItems = null;\nif (e.order_number) {\n  poItems = e.po_pofid ? idpItems(body('Extract order')) : null;\n  dnItems = e.dn_pofid ? idpItems(body('Extract delivery note')) : null;\n  if (!e.po_pofid) match = 'po_not_found';\n  else if (!e.dn_pofid) match = 'delivery_not_found';\n  else if (!poItems || !dnItems) match = 'unknown';\n  else {\n    const q = (list, code) => list.filter((x) => x.code === code).reduce((s, x) => s + x.quantity, 0);\n    const bad = e.line_items.filter((it) => it.code && (it.quantity > q(dnItems, it.code.toUpperCase()) || it.quantity > q(poItems, it.code.toUpperCase())));\n    match = bad.length ? 'quantity_mismatch' : 'ok';\n    if (bad.length) findings.push('Billed more than delivered or ordered: ' + bad.map((b) => b.code + ' × ' + b.quantity).join(', ') + '.');\n  }\n}\nchecks.order = match === 'ok' ? 'ok' : 'finding';\n// 5. Order already billed by other invoice(s) (v5)\nconst billed_by = Array.isArray(e.billed_by) ? e.billed_by : [];\nlet over_billed = false;\nif (billed_by.length) {\n  checks.billed = 'finding';\n  const sum = billed_by.reduce((s, b) => s + (Number(b.total) || 0), 0) + (Number(e.total_amount) || 0);\n  findings.push('Order ' + e.order_number + ' is already billed by ' + billed_by.map((b) => (b.invoice_number || b.file_name || '?') + (b.total ? ' (' + b.total.toFixed(2) + ')' : '')).join(', ') + '. Check the remaining quantity before paying.');\n  if (e.po_total && sum > Number(e.po_total) + 0.01) {\n    over_billed = true;\n    findings.push('All invoices for order ' + e.order_number + ' together (' + sum.toFixed(2) + ') exceed the order total (' + Number(e.po_total).toFixed(2) + ').');\n  }\n} else checks.billed = 'ok';\nif (match === 'po_not_found') findings.push('Order ' + e.order_number + ' was not found in the workspace.');\nif (match === 'delivery_not_found') findings.push('No delivery note found for order ' + e.order_number + '.');\nif (match === 'no_po_reference') findings.push('The invoice has no order number.');\nif (match === 'unknown') findings.push('Order or delivery note could not be read.');\nconst risk = findings.length === 0 ? 'low' : (checks.iban === 'finding' || checks.duplicate === 'finding' || over_billed ? 'high' : 'medium');\n// The values this check was based on, so a reviewer or another assistant reading the note sees the same evidence\nconst groups4 = (v) => String(v || '').replace(/\\s+/g, '').replace(/(.{4})(?=.)/g, '$1 ');\nconst plan_docs = $('Pick documents to read').all().map((i) => i.json);\nconst doc_name = (pofid) => ((plan_docs.find((p) => p.pofid === pofid) || {}).file_name || pofid || '?');\nconst sum_qty = (list, code) => (list ? list.filter((x) => x.code === code).reduce((s, x) => s + x.quantity, 0) : null);\nconst history_names = [...new Set(plan_docs.filter((p) => p.role === 'history' && p.pofid !== e.po_pofid && p.pofid !== e.dn_pofid).map((p) => p.file_name).filter(Boolean))];\nconst lines = [\n  'Fraud check (n8n) — ' + new Date().toISOString().slice(0, 16).replace('T', ' ') + ' UTC',\n  'Supplier: ' + (e.supplier || '?') + ' · Invoice: ' + (e.invoice_number || '?') + ' · Total: ' + (e.total_amount ?? '?') + ' ' + e.currency,\n  'IBAN check: ' + iban_status + ' · Duplicate: ' + checks.duplicate + ' · Order/delivery: ' + match,\n  'Risk: ' + risk + (findings.length ? '' : ' — no findings, approval by a reviewer is still required'),\n  ...findings.map((f) => '• ' + f),\n  '',\n  'Read from the invoice:',\n  '• Invoice ' + (e.invoice_number || '?') + (e.invoice_date ? ' of ' + e.invoice_date : '') + (e.due_date ? ' · due ' + e.due_date : '') + ' · total ' + (e.total_amount ?? '?') + ' ' + (e.currency || '') + ' · order ' + (e.order_number || 'none'),\n  '• IBAN on the invoice: ' + (e.iban ? groups4(e.iban) : 'none found'),\n  '• Known IBANs of this supplier: ' + (e.history_ibans.length ? e.history_ibans.map(groups4).join(', ') : 'none found'),\n  ...(e.line_items.length\n    ? ['• Items (invoiced / delivered / ordered):', ...e.line_items.map((it) => '  ' + (it.code || '?') + ': ' + it.quantity + ' / ' + (sum_qty(dnItems, String(it.code || '').toUpperCase()) ?? '–') + ' / ' + (sum_qty(poItems, String(it.code || '').toUpperCase()) ?? '–'))]\n    : ['• Items: none read']),\n  '• Order total: ' + (e.po_total ? Number(e.po_total).toFixed(2) : 'not read') + ' · already billed by: ' + (billed_by.length ? billed_by.map((b) => (b.invoice_number || b.file_name) + (b.total ? ' ' + b.total.toFixed(2) : '')).join(', ') : 'no other invoice'),\n  'Compared with: order ' + (e.po_pofid ? doc_name(e.po_pofid) : 'not found') + ' · delivery note ' + (e.dn_pofid ? doc_name(e.dn_pofid) : 'not found') + ' · earlier invoices ' + (history_names.length ? history_names.join(', ') : 'none'),\n  '',\n  'No payment is released by this workflow. The reviewer decides.',\n];\nreturn [{ json: { pofid: e.pofid, agent_uuid: e.agent_uuid, deep_check: e.deep_check, risk, findings, iban_check: { status: iban_status, check_id: 'iban_changed' }, duplicate: checks.duplicate, order_match: match, report: lines.join('\\n') } }];\n"
+      },
+      "id": "f65ab0dc-019a-4232-a140-78ac64c5ad05",
+      "name": "Evaluate checks",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2380,
+        160
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.paperoffice.ai/latest/documents/document-note-create",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBearerAuth",
+        "sendBody": true,
+        "contentType": "form-urlencoded",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "pofid",
+              "value": "={{ $json.pofid }}"
+            },
+            {
+              "name": "title",
+              "value": "Fraud check before payment"
+            },
+            {
+              "name": "category",
+              "value": "financial"
+            },
+            {
+              "name": "content",
+              "value": "={{ $json.report }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 60000,
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true,
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "id": "68329ec3-3cf9-4255-af12-cc66f56233bc",
+      "name": "Add check report",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2600,
+        160
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "70c1ddaf-0058-4756-a5de-9a1752bacf05",
+              "leftValue": "={{ $('Evaluate checks').item.json.deep_check }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "a74e3d13-ebc0-4aa6-a7ce-afc5b5e574ca",
+      "name": "Deep check requested?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        2820,
+        160
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ 'https://api.paperoffice.ai/latest/documents/document-process/' + encodeURIComponent($('Evaluate checks').item.json.pofid) }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBearerAuth",
+        "sendBody": true,
+        "contentType": "form-urlencoded",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "ai_dms_tier",
+              "value": "ultra"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 60000,
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true,
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "id": "ea6e6ac9-93ce-4faf-a70a-9be01ebe9ad1",
+      "name": "Start Ultra deep check",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        3040,
+        40
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.paperoffice.ai/latest/hitl_config/enqueue",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBearerAuth",
+        "sendBody": true,
+        "contentType": "form-urlencoded",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "config_uuid",
+              "value": "={{ $('Evaluate checks').item.json.agent_uuid }}"
+            },
+            {
+              "name": "pofid",
+              "value": "={{ $('Evaluate checks').item.json.pofid }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 60000,
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true,
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "id": "5f1b7e25-6807-41e6-aa04-12e3fddd287f",
+      "name": "Queue for human review",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        3260,
+        160
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "completion",
+        "respondWith": "text",
+        "completionTitle": "={{ 'Risk: ' + $('Evaluate checks').item.json.risk.toUpperCase() + ' · queued for human review' }}",
+        "completionMessage": "={{ ($('Evaluate checks').item.json.findings.length ? $('Evaluate checks').item.json.findings.join(' · ') : 'No findings.') + ' — IBAN check: ' + $('Evaluate checks').item.json.iban_check.status + '. No payment was released.' }}",
+        "options": {
+          "formTitle": "Invoice checked"
+        }
+      },
+      "id": "656822b5-295c-4d9d-a180-a35c32afe21a",
+      "name": "Show result",
+      "type": "n8n-nodes-base.form",
+      "typeVersion": 2.5,
+      "position": [
+        3480,
+        160
+      ]
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "paperoffice-review-decision",
+        "responseMode": "responseNode",
+        "options": {
+          "rawBody": true
+        }
+      },
+      "id": "07666f3b-83f2-4487-a1a5-8377ebbe5ac1",
+      "name": "Review decision",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        -260,
+        720
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "text",
+        "binaryPropertyName": "data",
+        "destinationKey": "raw_body",
+        "options": {}
+      },
+      "id": "9aeff2fc-6ad8-4fb1-ae00-08f90703e3e8",
+      "name": "Read raw body",
+      "type": "n8n-nodes-base.extractFromFile",
+      "typeVersion": 1,
+      "position": [
+        -40,
+        720
+      ],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "action": "hmac",
+        "type": "SHA256",
+        "value": "={{ $json.raw_body }}",
+        "dataPropertyName": "expected_signature",
+        "secret": "",
+        "encoding": "hex"
+      },
+      "id": "fdd1345a-ddfe-4e9f-a476-502352b1a6b8",
+      "name": "Compute signature",
+      "type": "n8n-nodes-base.crypto",
+      "typeVersion": 1,
+      "position": [
+        180,
+        720
+      ],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "// Compares X-PaperOffice-Signature with the HMAC computed by \"Compute signature\" over the RAW body (constant-time).\n// Works without the \"crypto\" module, so it runs on n8n Cloud and self-hosted alike. Anything missing → invalid → 401.\nconst hook = $('Review decision').first().json;\nconst headers = hook.headers || {};\nconst sig = String(headers['x-paperoffice-signature'] || '');\nconst raw = String($('Read raw body').first().json.raw_body || '');\nconst expected = 'sha256=' + String($input.first().json.expected_signature || '');\nlet valid = raw.length > 0 && expected.length === 71 && sig.length === expected.length;\nlet diff = 0;\nfor (let i = 0; i < expected.length; i++) diff |= (sig.charCodeAt(i) || 0) ^ expected.charCodeAt(i);\nvalid = valid && diff === 0;\nlet payload = {};\ntry { payload = JSON.parse(raw); } catch (e) { payload = {}; }\nreturn [{ json: { valid, event: String(headers['x-paperoffice-event'] || payload.event_type || ''), event_id: String(headers['x-paperoffice-event-id'] || payload.event_id || ''), data: payload.data || {} } }];\n"
+      },
+      "id": "b90e60b0-1cc0-4316-a345-a03264fcf3e4",
+      "name": "Verify signature",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        400,
+        720
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "fde70dd3-0b77-4b59-a0cf-0dcea047e96a",
+              "leftValue": "={{ $json.valid }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "40a92e89-f696-4aa5-a9ec-6ccf125af7dd",
+      "name": "Signature valid?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        620,
+        720
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "// Only a reviewers' approval leads to \"ready for payment\". Escalation, rejection or anything else blocks.\nconst d = $json.data || {};\nconst approved = $json.event === 'hitl.review.consensus_completed' && String(d.final_decision || '') === 'approve';\nreturn [{ json: { pofid: d.pofid || '', approved, decision: d.final_decision || $json.event, task_uuid: d.task_uuid || '' } }];\n"
+      },
+      "id": "031b20e6-f0f4-4f52-adaa-a5aa7d962fba",
+      "name": "Read decision",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        840,
+        660
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "72f08a45-969c-4200-ac7a-3028149db84f",
+              "leftValue": "={{ $json.approved }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "54890146-a4ff-4e13-ab52-1dea38a4a1c8",
+      "name": "Approved?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1060,
+        660
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.paperoffice.ai/latest/documents/document-tag-add",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBearerAuth",
+        "sendBody": true,
+        "contentType": "form-urlencoded",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "pofid",
+              "value": "={{ $('Read decision').item.json.pofid }}"
+            },
+            {
+              "name": "tag_name",
+              "value": "fraud-check:ready-for-payment"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 60000,
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true,
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "id": "a78cb8e4-f0e5-4224-a6f9-3417792ddfdd",
+      "name": "Tag ready for payment",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1280,
+        600
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.paperoffice.ai/latest/documents/document-tag-add",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBearerAuth",
+        "sendBody": true,
+        "contentType": "form-urlencoded",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "pofid",
+              "value": "={{ $('Read decision').item.json.pofid }}"
+            },
+            {
+              "name": "tag_name",
+              "value": "fraud-check:blocked"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 60000,
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true,
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "id": "01c39737-2481-460c-aa23-a3257d800f7b",
+      "name": "Tag blocked",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1280,
+        760
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { received: true } }}",
+        "options": {}
+      },
+      "id": "f3a6d4b2-5ac2-4253-a253-e8058ea6514e",
+      "name": "Confirm receipt",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [
+        1500,
+        680
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { error: \"invalid signature\" } }}",
+        "options": {
+          "responseCode": 401
+        }
+      },
+      "id": "61890686-070b-474b-ae7b-eacbeacc8592",
+      "name": "Reject unsigned call",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [
+        840,
+        840
+      ]
+    }
+  ],
+  "connections": {
+    "Upload invoice": {
+      "main": [
+        [
+          {
+            "node": "Settings",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Settings": {
+      "main": [
+        [
+          {
+            "node": "Archive invoice",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Archive invoice": {
+      "main": [
+        [
+          {
+            "node": "Check upload",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check upload": {
+      "main": [
+        [
+          {
+            "node": "Extract invoice",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract invoice": {
+      "main": [
+        [
+          {
+            "node": "Read invoice",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read invoice": {
+      "main": [
+        [
+          {
+            "node": "Find earlier invoices",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Find earlier invoices": {
+      "main": [
+        [
+          {
+            "node": "Find order and delivery note",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Find order and delivery note": {
+      "main": [
+        [
+          {
+            "node": "Find same invoice number",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Find same invoice number": {
+      "main": [
+        [
+          {
+            "node": "Duplicate check",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Duplicate check": {
+      "main": [
+        [
+          {
+            "node": "Pick documents to read",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Pick documents to read": {
+      "main": [
+        [
+          {
+            "node": "Read document text",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read document text": {
+      "main": [
+        [
+          {
+            "node": "Collect evidence",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Collect evidence": {
+      "main": [
+        [
+          {
+            "node": "Order and delivery note found?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Order and delivery note found?": {
+      "main": [
+        [
+          {
+            "node": "Extract order",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Evaluate checks",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract order": {
+      "main": [
+        [
+          {
+            "node": "Extract delivery note",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract delivery note": {
+      "main": [
+        [
+          {
+            "node": "Evaluate checks",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Evaluate checks": {
+      "main": [
+        [
+          {
+            "node": "Add check report",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Add check report": {
+      "main": [
+        [
+          {
+            "node": "Deep check requested?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Deep check requested?": {
+      "main": [
+        [
+          {
+            "node": "Start Ultra deep check",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Queue for human review",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Start Ultra deep check": {
+      "main": [
+        [
+          {
+            "node": "Queue for human review",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Queue for human review": {
+      "main": [
+        [
+          {
+            "node": "Show result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Review decision": {
+      "main": [
+        [
+          {
+            "node": "Read raw body",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read raw body": {
+      "main": [
+        [
+          {
+            "node": "Compute signature",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Compute signature": {
+      "main": [
+        [
+          {
+            "node": "Verify signature",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Verify signature": {
+      "main": [
+        [
+          {
+            "node": "Signature valid?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Signature valid?": {
+      "main": [
+        [
+          {
+            "node": "Read decision",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Reject unsigned call",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read decision": {
+      "main": [
+        [
+          {
+            "node": "Approved?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Approved?": {
+      "main": [
+        [
+          {
+            "node": "Tag ready for payment",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Tag blocked",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Tag ready for payment": {
+      "main": [
+        [
+          {
+            "node": "Confirm receipt",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Tag blocked": {
+      "main": [
+        [
+          {
+            "node": "Confirm receipt",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "active": false
+}
