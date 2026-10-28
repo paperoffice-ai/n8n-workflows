@@ -76,8 +76,6 @@ Video walkthrough: https://www.youtube.com/watch?v=gDwfCGvXyjo
 4. Open the **Review decision** node and copy its production URL into the webhook URL of your HITL agent and save. Copy the signing secret that PaperOffice AI shows once into the **Compute signature** node (field *Secret*).
 5. Activate the workflow (n8n activates it only once the secret is set), then upload a scan with an order, a delivery note and an invoice.
 
-Document processing runs on PaperOffice AI's own servers, without external AI providers.
-
 ## Security notes
 
 - The workflow files contain **no credentials, tokens, webhook secrets or account data**. You add your own after the import.
