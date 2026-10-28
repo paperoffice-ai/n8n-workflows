@@ -3,7 +3,7 @@
   "nodes": [
     {
       "parameters": {
-        "content": "## Stop invoice fraud before payment\n\n**Who it is for:** accounts payable teams, controllers and ERP integrators who need a payment gate against changed bank details, duplicates and over-billing.\n\n**What it does:** every invoice is archived and checked in [PaperOffice AI](https://paperoffice.ai/en/), then **a human decides**. This workflow never releases a payment.\n\n### How it works\n1. **Upload invoice** → **Archive invoice** stores the PDF, **Extract invoice** reads it.\n2. Full-text searches in your workspace find earlier invoices of the supplier, the order, the delivery note and the same invoice number.\n3. **Evaluate checks**: IBAN against earlier invoices (match / changed / unknown), duplicates, order and delivery note. Anything unclear is a finding.\n4. **Add check report** writes the result to the document, **Queue for human review** creates the HITL task.\n5. **Review decision** (signed webhook) tags the invoice *ready for payment* or *blocked*.\n\n### Set up (about 10 minutes)\n1. Bearer credential with your PaperOffice AI token ([Account → API](https://app.paperoffice.ai/en/paperoffice-account/api)) in all PaperOffice nodes.\n2. **Settings**: workspace ID and HITL agent UUID.\n3. In the HITL agent, set the webhook URL to the production URL of **Review decision**; put the signing secret into **Compute signature**. Then activate.\n\n### Customize\n- Optional deep check with AI-DMS Ultra (billed per page).\n- Swap the form for Gmail, Outlook or Google Drive. API reference: [llms.txt](https://api.paperoffice.ai/latest/docs/llms.txt)",
+        "content": "## Stop invoice fraud before payment\n\n**Who it is for:** accounts payable teams, controllers and ERP integrators who need a payment gate against changed bank details, duplicates and over-billing.\n\n**What it does:** every invoice is archived and checked in [PaperOffice AI](https://paperoffice.ai/en/), then **a human decides**. This workflow never releases a payment.\n\n### How it works\n1. **Upload invoice** → **Archive invoice** stores the PDF, **Extract invoice** reads it.\n2. Full-text searches in your workspace find earlier invoices of the supplier, the order, the delivery note and the same invoice number.\n3. **Evaluate checks**: IBAN against earlier invoices (match / changed / unknown), duplicates, order and delivery note. Anything unclear is a finding.\n4. **Add check report** writes the result to the document, **Queue for human review** creates the HITL task.\n5. **Review decision** (signed webhook) tags the invoice *ready for payment* or *blocked*.\n\n### Set up (about 10 minutes)\n1. Bearer credential with your PaperOffice AI token ([Account → API](https://app.paperoffice.ai/en/paperoffice-account/api)) in all PaperOffice nodes.\n2. **Settings**: workspace ID and HITL agent UUID.\n3. In the HITL agent, set the webhook URL to the production URL of **Review decision**; put the signing secret into **Compute signature**. Then activate.\n\n### Customize\n- Optional deep check with AI-DMS Ultra.\n- Swap the form for Gmail, Outlook or Google Drive. API reference: [llms.txt](https://api.paperoffice.ai/latest/docs/llms.txt)",
         "height": 900,
         "width": 560
       },
@@ -106,7 +106,7 @@
                     "option": "No"
                   },
                   {
-                    "option": "Yes (billed per page)"
+                    "option": "Yes (paid)"
                   }
                 ]
               }
