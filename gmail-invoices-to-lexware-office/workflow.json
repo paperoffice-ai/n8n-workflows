@@ -1,0 +1,777 @@
+{
+  "name": "Create Lexware Office vouchers from Gmail invoice attachments with PaperOffice AI",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## Create Lexware Office vouchers from Gmail invoices\n\n**Who it is for:** small businesses, freelancers and bookkeepers who use Lexware Office (formerly lexoffice) and receive supplier invoices by email.\n\n**What it does:** every new email with a PDF or image attachment is read by [PaperOffice AI](https://paperoffice.ai/en/) document AI. A purchase invoice voucher with supplier, invoice number, dates, gross and VAT amounts and the original file is created in Lexware Office with the status \"to be checked\". Invoices already in Lexware Office, in another currency or with amounts that do not add up are listed with a note instead.\n\n### How it works\n1. **Gmail Trigger** downloads new emails with attachments; **Split attachments** makes one item per invoice file.\n2. **Extract invoice data** sends the file to PaperOffice AI (`POST /job/add/workflow`, profile `invoice`). HTTP 202 loops through **Wait 10 seconds** and **Check job status**.\n3. **Build Lexware voucher** maps the fields; **Find invoice in Lexware** checks the invoice number.\n4. **Create voucher** and **Attach original file** create the voucher \"to be checked\" with the file.\n5. **Result** lists every invoice with status and voucher link.\n\n### Set up (about 5 minutes)\n1. Create a PaperOffice AI **User token** (`po_ut_…`) under [Account → API](https://app.paperoffice.ai/en/paperoffice-account/api) and a **Bearer Auth** credential for **Extract invoice data** and **Check job status**.\n2. Create a Lexware Office private API key at app.lexware.de/addons/public-api and a second **Bearer Auth** credential for the three Lexware nodes.\n3. Connect Gmail in **New email with attachment**, for example with `label:invoices`.\n4. Optional: change the preset booking category `CATEGORY_ID` in **Build Lexware voucher**.\n\n### Good to know\n- Nothing is booked automatically: every voucher stays \"to be checked\".\n- If Lexware Office does not confirm a voucher, the invoice is marked **Uncertain** and not sent again.\n- API reference for AI agents: [llms.txt](https://api.paperoffice.ai/latest/docs/llms.txt)",
+        "height": 1000,
+        "width": 560
+      },
+      "id": "38991578-2d35-4d42-af96-8e143cb96f11",
+      "name": "Main note",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -760,
+        -260
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## 1 · New invoice emails\nPolls Gmail and downloads attachments. One item per PDF or image follows.",
+        "height": 480,
+        "width": 520,
+        "color": 7
+      },
+      "id": "de8998d0-7321-409b-a9b2-8a9de9be8362",
+      "name": "Section 1",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -160,
+        -260
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## 2 · Read the invoice with PaperOffice AI\nOne call per file. HTTP 202 means the job is still running; the loop checks it every 10 seconds.",
+        "height": 720,
+        "width": 920,
+        "color": 7
+      },
+      "id": "113bca06-f4ba-4f33-aa5b-4a5991a197b0",
+      "name": "Section 2",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        400,
+        -260
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## 3 · Check before sending\nRepeats, other currencies, missing invoice numbers and invoices already in Lexware Office are not sent.",
+        "height": 720,
+        "width": 760,
+        "color": 7
+      },
+      "id": "e0823d25-362a-4ed2-a379-eee05e85fba9",
+      "name": "Section 3",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        1360,
+        -260
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## 4 · Create the voucher in Lexware Office\nStatus \"to be checked\", with the original file. One request at a time (Lexware allows 2 per second).",
+        "height": 720,
+        "width": 1000,
+        "color": 7
+      },
+      "id": "bbd6063b-b5c3-43a7-a8a9-d8de70f9afed",
+      "name": "Section 4",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        2160,
+        -260
+      ]
+    },
+    {
+      "parameters": {
+        "pollTimes": {
+          "item": [
+            {
+              "mode": "everyMinute"
+            }
+          ]
+        },
+        "simple": false,
+        "filters": {
+          "q": "has:attachment (filename:pdf OR filename:png OR filename:jpg OR filename:jpeg OR filename:tif OR filename:tiff)"
+        },
+        "options": {
+          "downloadAttachments": true,
+          "dataPropertyAttachmentsPrefixName": "attachment_"
+        }
+      },
+      "id": "d3d5e88c-dba8-4fd0-a6e6-a1715e120299",
+      "name": "New email with attachment",
+      "type": "n8n-nodes-base.gmailTrigger",
+      "typeVersion": 1.3,
+      "position": [
+        -100,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "// One item per invoice attachment: PDF, PNG, JPEG or TIFF.\n// Small images are skipped because they are usually logos or signatures from the email body.\nconst MIN_IMAGE_BYTES = 30 * 1024;\nconst out = [];\nconst emails = $input.all();\n\nfor (let index = 0; index < emails.length; index++) {\n  const email = emails[index];\n  const j = email.json || {};\n  const from = (j.from && j.from.value && j.from.value[0] && j.from.value[0].address) || (j.from && j.from.text) || (typeof j.from === 'string' ? j.from : '');\n  const received = j.date ? new Date(j.date) : null;\n\n  for (const [key, bin] of Object.entries(email.binary || {})) {\n    const name = String(bin.fileName || key);\n    const mime = String(bin.mimeType || '').toLowerCase();\n    const isPdf = mime === 'application/pdf' || /\\.pdf$/i.test(name);\n    const isImage = /^image\\/(png|jpeg|jpg|tiff)$/.test(mime) || /\\.(png|jpe?g|tiff?)$/i.test(name);\n    if (!isPdf && !isImage) continue;\n    if (isImage) {\n      const buffer = await this.helpers.getBinaryDataBuffer(index, key);\n      if (buffer.length < MIN_IMAGE_BYTES) continue;\n    }\n    out.push({\n      json: {\n        'Received': received && !isNaN(received) ? received.toISOString().slice(0, 16).replace('T', ' ') : '',\n        'From': from,\n        'Subject': j.subject || '',\n        'File': name,\n      },\n      binary: { invoice: bin },\n      pairedItem: { item: index },\n    });\n  }\n}\n\nreturn out;\n"
+      },
+      "id": "5a2d5ea7-4eaf-4d72-af06-85e082d4d680",
+      "name": "Split attachments",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        140,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.paperoffice.ai/latest/job/add/workflow",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBearerAuth",
+        "sendBody": true,
+        "contentType": "multipart-form-data",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "parameterType": "formBinaryData",
+              "name": "file",
+              "inputDataFieldName": "invoice"
+            },
+            {
+              "parameterType": "formData",
+              "name": "idp_collection",
+              "value": "invoice"
+            },
+            {
+              "parameterType": "formData",
+              "name": "model",
+              "value": "basic-pro-max"
+            },
+            {
+              "parameterType": "formData",
+              "name": "client_wait",
+              "value": "true"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 300000,
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true,
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "id": "70da4735-0310-4cd1-a240-0f3fd5a88620",
+      "name": "Extract invoice data",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        460,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "language": "javaScript",
+        "jsCode": "// Reads the answer of \"Extract invoice data\" or \"Check job status\" and builds one sheet row.\n// Status: Extracted | Needs review (required fields missing) | Processing (checked again) | Failed\nconst MAX_CHECKS = 30; // 30 checks × 10 s = 5 more minutes after the first answer\n\nconst email = $('Split attachments').item.json;\nconst res = $json || {};\nconst httpCode = Number(res.statusCode || 0);\nlet body = res.body !== undefined ? res.body : res;\nif (typeof body === 'string') {\n  try { body = JSON.parse(body); } catch (e) { body = { message: body.slice(0, 300) }; }\n}\nbody = body || {};\n\nif (httpCode === 401 || httpCode === 403) {\n  throw new Error('PaperOffice AI rejected the API key (HTTP ' + httpCode + '). Create a User token (po_ut_…) under Account → API and put it into the \"PaperOffice AI\" credential.');\n}\n\nconst row = {\n  'Received': email['Received'],\n  'From': email['From'],\n  'Subject': email['Subject'],\n  'File': email['File'],\n  'Status': '',\n  'Supplier': '',\n  'Supplier VAT ID': '',\n  'Invoice number': '',\n  'Invoice date': '',\n  'Due date': '',\n  'Net amount': '',\n  'VAT amount': '',\n  'Total amount': '',\n  'Currency': '',\n  'IBAN': '',\n  'Payment terms': '',\n  'Line items': '',\n  'Missing fields': '',\n  'Job ID': String(body.job_id || ''),\n  'Note': '',\n};\n\nconst jobStatus = String(body.job_status || '').toLowerCase();\nconst failed = httpCode >= 400 || body.status === 'error' || ['failed', 'error', 'cancelled'].includes(jobStatus);\nif (failed) {\n  row['Status'] = 'Failed';\n  row['Note'] = [body.error_code || body.code, body.message || body.error || ('HTTP ' + httpCode)].filter(Boolean).join(': ');\n  return { json: row };\n}\n\nconst payload = body.result || body.job_result || {};\nconst pages = Array.isArray(payload.pages_idp) ? payload.pages_idp : [];\nconst finished = ['completed', 'done'].includes(jobStatus) || pages.length > 0;\n\nif (!finished) {\n  if (!row['Job ID']) {\n    row['Status'] = 'Failed';\n    row['Note'] = 'No job ID in the answer (HTTP ' + httpCode + ').';\n  } else if ($runIndex >= MAX_CHECKS) {\n    row['Status'] = 'Failed';\n    row['Note'] = 'Still running after ' + MAX_CHECKS + ' checks. Look up the job ID later with GET /job/get/{job_id}.';\n  } else {\n    row['Status'] = 'Processing';\n  }\n  return { json: row };\n}\n\n// suggested_fields is either an object keyed by field or an array of { key | category, value, value_raw }\nfunction rawField(key) {\n  for (const page of pages) {\n    const sf = page && page.suggested_fields;\n    if (!sf) continue;\n    const f = Array.isArray(sf) ? sf.find((x) => x && (x.key === key || x.category === key)) : sf[key];\n    if (f === undefined || f === null) continue;\n    const value = typeof f === 'object' ? f.value : f;\n    if (value === 'VALUE_MISSING') continue;\n    if (value !== undefined && value !== null && String(value).trim() !== '') {\n      return { value, raw: typeof f === 'object' && f.value_raw !== undefined && f.value_raw !== null ? f.value_raw : value };\n    }\n  }\n  return null;\n}\nconst text = (key) => { const f = rawField(key); return f ? String(f.value).trim() : ''; };\n// value_raw is machine-readable: ISO date, amount with a dot as decimal separator\nconst date = (key) => { const f = rawField(key); return f ? String(f.raw).trim() : ''; };\nconst amount = (key) => {\n  const f = rawField(key);\n  if (!f) return '';\n  const raw = String(f.raw).trim();\n  const m = /^(-?\\d+(?:\\.\\d+)?)(?:\\s*[A-Z]{3})?$/.exec(raw);\n  return m ? Number(m[1]) : String(f.value).trim();\n};\n\nconst positions = (rawField('_line_items') || {}).value;\nconst lineItems = Array.isArray(positions)\n  ? positions.map((it) => [it.quantity, it.description, it.total_price_net].filter((v) => v !== undefined && v !== null && String(v).trim() !== '').join(' · ')).join('\\n')\n  : (positions ? String(positions) : '');\nconst missing = Number(pages[0] && pages[0].__document__data__idp__missing_required_count) || 0;\n\n// Plausibility: net + VAT must match the total (1 cent tolerance per amount for rounding)\nconst net = amount('_net_amount'); const vat = amount('_vat_amount'); const total = amount('_total_amount');\nconst sumOff = typeof net === 'number' && typeof vat === 'number' && typeof total === 'number' && Math.abs(net + vat - total) > 0.02;\n\nObject.assign(row, {\n  'Status': missing > 0 || sumOff ? 'Needs review' : 'Extracted',\n  'Note': sumOff ? 'Net ' + net.toFixed(2) + ' + VAT ' + vat.toFixed(2) + ' does not match the total ' + total.toFixed(2) + '.' : '',\n  'Supplier': text('_supplier_name'),\n  'Supplier VAT ID': text('_supplier_vat_id'),\n  'Invoice number': text('_invoice_number'),\n  'Invoice date': date('_invoice_date'),\n  'Due date': date('_payment_due_date'),\n  'Net amount': net,\n  'VAT amount': vat,\n  'Total amount': total,\n  'Currency': text('_currency'),\n  'IBAN': text('_creditor_iban'),\n  'Payment terms': text('_payment_terms'),\n  'Line items': lineItems,\n  'VAT breakdown': (() => { const b = (rawField('_vat_breakdown') || {}).value; return Array.isArray(b) ? b : []; })(),\n  'Missing fields': missing,\n});\nreturn { json: row };\n"
+      },
+      "id": "b8d765cc-871b-4fc9-a192-92844996df2f",
+      "name": "Read PaperOffice answer",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        700,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "f3b1c2d4-0a5e-4b6f-9c7d-8e9f0a1b2c3d",
+              "leftValue": "={{ $json.Status }}",
+              "rightValue": "Processing",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "09b1cca6-5e6a-4169-adb4-aaee01cb0c9f",
+      "name": "Still running?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        940,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "amount": 10,
+        "unit": "seconds"
+      },
+      "id": "2f0fb565-1633-4128-ac05-2eac490db376",
+      "name": "Wait 10 seconds",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        1160,
+        220
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ 'https://api.paperoffice.ai/latest/job/get/' + encodeURIComponent($json['Job ID']) }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBearerAuth",
+        "options": {
+          "timeout": 30000,
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true,
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "id": "e922b1fc-adbe-4b04-a9c3-2fae2c55ce8f",
+      "name": "Check job status",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        700,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "// Marks repeats of an invoice: same supplier and invoice number as an invoice this workflow already created\n// in the accounting system (remembered in \"Result\", active runs only, last 5,000), or as an earlier file in this run.\nconst seen = $getWorkflowStaticData('global');\nseen.invoices = seen.invoices || {};\nconst thisRun = {};\n// Letters and digits of any script; spaces, dashes and dots do not count\nconst norm = (v) => String(v || '').normalize('NFKC').toLocaleUpperCase().replace(/[^\\p{L}\\p{N}]/gu, '');\nreturn $input.all().map((item) => {\n  const row = { ...item.json };\n  const supplier = norm(row['Supplier']);\n  const number = norm(row['Invoice number']);\n  if (['Extracted', 'Needs review'].includes(row['Status']) && supplier && number) {\n    const key = supplier + '|' + number;\n    const first = seen.invoices[key] || thisRun[key];\n    if (first) {\n      row['Status'] = 'Duplicate';\n      row['Note'] = 'Already sent from \"' + first.file + '\" (' + first.received + ').' + (row['Note'] ? ' ' + row['Note'] : '');\n    } else {\n      thisRun[key] = { file: row['File'], received: row['Received'] };\n    }\n  }\n  return { json: row, pairedItem: item.pairedItem };\n});\n"
+      },
+      "id": "6cafd4cc-f05a-41e1-a662-06c76caab641",
+      "name": "Mark duplicates",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1400,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "language": "javaScript",
+        "jsCode": "// Builds the Lexware Office voucher from the extracted row and decides whether it can be sent.\n// Booking category for the VAT lines; preset: \"Sonstige Ausgaben\". Other IDs: GET https://api.lexware.io/v1/posting-categories\n// The category is checked by a person anyway, because every voucher stays \"to be checked\".\nconst CATEGORY_ID = '16d04a28-fd91-11e1-a21f-0800200c9a66';\nconst LEXWARE_TAX_RATES = [0, 5, 7, 16, 19];\n\nconst row = { ...$json };\nconst out = { ...row, 'Lexware voucher': '', 'Lexware link': '' };\nconst pass = (status, note) => ({ json: { ...out, 'Status': status, 'Note': [note, row['Note']].filter(Boolean).join(' '), send: false } });\n\nif (!['Extracted', 'Needs review'].includes(row['Status'])) return { json: { ...out, send: false } };\n// Missing optional fields only mark the row; amounts that do not add up are never sent\nif (row['Status'] === 'Needs review' && /does not match the total/.test(row['Note'] || '')) return pass('Needs review', 'Not sent to Lexware Office.');\n\nconst currency = String(row['Currency'] || 'EUR').toUpperCase();\nif (currency !== 'EUR') return pass('Needs review', 'Currency ' + currency + ': Lexware Office vouchers are EUR only. Not sent.');\nconst number = String(row['Invoice number'] || '').trim();\nif (!number) return pass('Needs review', 'No invoice number, so the duplicate check in Lexware Office is not possible. Not sent.');\nconst total = row['Total amount'];\nif (typeof total !== 'number') return pass('Needs review', 'No readable total amount. Not sent.');\n\nconst r2 = (v) => Math.round(Math.abs(Number(v) || 0) * 100) / 100;\nconst isDate = (v) => /^\\d{4}-\\d{2}-\\d{2}/.test(String(v || ''));\nconst vat = typeof row['VAT amount'] === 'number' ? row['VAT amount'] : 0;\n\nconst voucher = {\n  type: total < 0 ? 'purchasecreditnote' : 'purchaseinvoice',\n  voucherStatus: 'unchecked',\n  voucherNumber: number.slice(0, 255),\n  totalGrossAmount: r2(total),\n  totalTaxAmount: r2(vat),\n  taxType: 'gross',\n  useCollectiveContact: true,\n  remark: ('Read by PaperOffice AI from \"' + row['File'] + '\" (job ' + row['Job ID'] + '). Please check before booking.').slice(0, 1000),\n};\nif (row['Supplier']) voucher.contactName = String(row['Supplier']).slice(0, 255);\nif (isDate(row['Invoice date'])) voucher.voucherDate = String(row['Invoice date']).slice(0, 10);\nif (isDate(row['Due date'])) voucher.dueDate = String(row['Due date']).slice(0, 10);\n\n{\n  // Lexware needs VAT lines whenever amounts are sent: one gross line per VAT rate, the totals are the sums of the lines.\n  const parts = (row['VAT breakdown'] || [])\n    .map((b) => ({ rate: Number(b.rate_percent), net: Number(b.taxable_base_net ?? b.net_amount), tax: Number(b.vat_amount) }))\n    .filter((b) => Number.isFinite(b.rate) && Number.isFinite(b.net) && Number.isFinite(b.tax));\n  const lines = parts.length\n    ? parts.map((b) => ({ rate: b.rate, gross: r2(b.net + b.tax), tax: r2(b.tax) }))\n    : (typeof row['Net amount'] === 'number' && row['Net amount'] !== 0\n      ? [{ rate: Math.round((vat / row['Net amount']) * 100), gross: r2(total), tax: r2(vat) }]\n      : []);\n  const valid = lines.length && lines.every((l) => LEXWARE_TAX_RATES.includes(l.rate));\n  const sum = lines.reduce((s, l) => s + l.gross, 0);\n  if (valid && Math.abs(sum - r2(total)) <= 0.02) {\n    voucher.voucherItems = lines.map((l) => ({ amount: l.gross, taxAmount: l.tax, taxRatePercent: l.rate, categoryId: CATEGORY_ID }));\n    voucher.totalGrossAmount = r2(lines.reduce((s, l) => s + l.gross, 0));\n    voucher.totalTaxAmount = r2(lines.reduce((s, l) => s + l.tax, 0));\n  } else {\n    // Without valid lines Lexware rejects the totals: send number, dates and file only\n    delete voucher.totalGrossAmount;\n    delete voucher.totalTaxAmount;\n    out['Status'] = 'Needs review';\n    out['Note'] = [out['Note'], 'Amounts not sent (VAT rate not supported by Lexware or lines do not add up); please enter them in Lexware Office.'].filter(Boolean).join(' ');\n  }\n}\n\nreturn { json: { ...out, send: true, voucher } };\n"
+      },
+      "id": "d03ea09c-1750-4f28-ad2a-832178aab3fd",
+      "name": "Build Lexware voucher",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1620,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "6c0b9f4e-2d71-4a8e-9b3c-5f1e7a2d4c60",
+              "leftValue": "={{ $json.send }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "912467e2-213f-446d-ab77-260bd4c25cf6",
+      "name": "Send to Lexware?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1860,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ 'https://api.lexware.io/v1/voucherlist?voucherType=purchaseinvoice,purchasecreditnote&voucherStatus=any&size=250&voucherNumber=' + encodeURIComponent($json['Invoice number']) }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBearerAuth",
+        "options": {
+          "timeout": 30000,
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true,
+              "responseFormat": "json"
+            }
+          },
+          "batching": {
+            "batch": {
+              "batchSize": 1,
+              "batchInterval": 600
+            }
+          }
+        }
+      },
+      "id": "3f882051-de82-423f-a04a-a0a95e9d5e65",
+      "name": "Find invoice in Lexware",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2200,
+        -60
+      ],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "language": "javaScript",
+        "jsCode": "// Lexware voucher list answer: same invoice number already there → Duplicate, otherwise create the voucher.\nconst row = { ...$('Build Lexware voucher').item.json };\nconst res = $json || {};\nconst code = Number(res.statusCode || 0);\nif (code === 401 || code === 403) {\n  throw new Error('Lexware Office rejected the API key (HTTP ' + code + '). Create a private API key at https://app.lexware.de/addons/public-api and put it into the Lexware credential.');\n}\nif (code !== 200) {\n  return { json: { ...row, 'Status': 'Failed', 'Note': 'Lexware voucher list answered HTTP ' + code + '. Not sent.', send: false } };\n}\nconst norm = (v) => String(v || '').normalize('NFKC').toLocaleUpperCase().replace(/[^\\p{L}\\p{N}]/gu, '');\nconst content = (res.body && Array.isArray(res.body.content)) ? res.body.content : [];\n// Same invoice number and the same supplier (a missing name on either side does not count as different)\nconst sameName = (a, b) => !norm(a) || !norm(b) || norm(a) === norm(b);\nconst same = content.find((v) => norm(v.voucherNumber) === norm(row['Invoice number']) && sameName(v.contactName, row['Supplier']));\nif (same) {\n  return { json: { ...row, 'Status': 'Duplicate', 'Note': 'Invoice number already in Lexware Office (' + same.voucherStatus + ').', 'Lexware voucher': same.id, 'Lexware link': 'https://app.lexware.de/permalink/vouchers/view/' + same.id, send: false } };\n}\nreturn { json: { ...row, send: true } };\n"
+      },
+      "id": "b586a6db-a05f-4c4c-a2cb-87e61d76fbb1",
+      "name": "Already in Lexware?",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2400,
+        -60
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "2b7e4c1a-9d3f-4e6b-8a1c-0f5d7e9b3a24",
+              "leftValue": "={{ $json.send }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "8ad487cb-f1e9-417f-afa2-c661713a3268",
+      "name": "New in Lexware?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        2600,
+        -60
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.lexware.io/v1/vouchers",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBearerAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.voucher) }}",
+        "options": {
+          "timeout": 30000,
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true,
+              "responseFormat": "json"
+            }
+          },
+          "batching": {
+            "batch": {
+              "batchSize": 1,
+              "batchInterval": 600
+            }
+          }
+        }
+      },
+      "id": "55508b6e-50ed-4ccb-a973-eef7aa0b316c",
+      "name": "Create voucher",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2800,
+        -60
+      ],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "language": "javaScript",
+        "jsCode": "// Answer of \"Create voucher\": keep the voucher ID and add the original file again for the upload.\nconst row = { ...$('Already in Lexware?').item.json };\nconst res = $json || {};\nconst code = Number(res.statusCode || 0);\nconst id = res.body && res.body.id;\nif (code === 401 || code === 403) {\n  throw new Error('Lexware Office rejected the API key (HTTP ' + code + ').');\n}\nif (!code || code >= 500 || res.error) {\n  // Timeout or server error: the voucher may exist. Never send again automatically.\n  return { json: { ...row, 'Status': 'Uncertain', 'Note': 'Lexware Office did not confirm the voucher (HTTP ' + (code || 'timeout') + '). Check Lexware Office before sending it again.', send: false } };\n}\nif (code >= 400 || !id) {\n  const msg = res.body && (res.body.message || (res.body.details && JSON.stringify(res.body.details)));\n  return { json: { ...row, 'Status': 'Failed', 'Note': 'Lexware Office rejected the voucher (HTTP ' + code + ')' + (msg ? ': ' + String(msg).slice(0, 300) : '.'), send: false } };\n}\nreturn {\n  json: { ...row, 'Status': row['Status'] === 'Needs review' ? 'Needs review' : 'Created', 'Lexware voucher': id, 'Lexware link': 'https://app.lexware.de/permalink/vouchers/view/' + id, send: true },\n  binary: $('Split attachments').item.binary,\n};\n"
+      },
+      "id": "9eb21278-251e-4888-a6df-9a5af13da0b0",
+      "name": "Add original file",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3000,
+        -60
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "7c3a1e5d-2b8f-4a9c-b6d0-3e1f5a7c9b42",
+              "leftValue": "={{ $json.send }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "45017393-19e5-4220-ac8d-eb58e63bb354",
+      "name": "Voucher created?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        2600,
+        240
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ 'https://api.lexware.io/v1/vouchers/' + encodeURIComponent($json['Lexware voucher']) + '/files' }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBearerAuth",
+        "sendBody": true,
+        "contentType": "multipart-form-data",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "parameterType": "formBinaryData",
+              "name": "file",
+              "inputDataFieldName": "invoice"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 60000,
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true,
+              "responseFormat": "json"
+            }
+          },
+          "batching": {
+            "batch": {
+              "batchSize": 1,
+              "batchInterval": 600
+            }
+          }
+        }
+      },
+      "id": "c145d51a-7b48-456e-ad76-ecbcd33a583a",
+      "name": "Attach original file",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2800,
+        240
+      ],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "language": "javaScript",
+        "jsCode": "// One line per invoice (runs per item): status, note and the link to the voucher in Lexware Office.\nconst j = $json || {};\nlet row = j;\nif (j.statusCode !== undefined || j.error !== undefined) {\n  // Answer of \"Attach original file\" (also a network error): the matching invoice row of this item\n  row = { ...$('Add original file').item.json };\n  const code = Number(j.statusCode || 0);\n  if (code < 200 || code >= 300) {\n    row['Status'] = 'Needs review';\n    row['Note'] = [row['Note'], 'Voucher created, but the file was not attached (HTTP ' + (code || 'timeout') + '). Attach it in Lexware Office.'].filter(Boolean).join(' ');\n  }\n}\nconst { send, voucher, ...out } = row;\nremember(out, out['Lexware voucher']);\nreturn { json: out };\n\nfunction remember(row, targetId) {\n  if (!targetId) return;\n  const norm = (v) => String(v || '').normalize('NFKC').toLocaleUpperCase().replace(/[^\\p{L}\\p{N}]/gu, '');\n  const supplier = norm(row['Supplier']);\n  const number = norm(row['Invoice number']);\n  if (!supplier || !number) return;\n  const seen = $getWorkflowStaticData('global');\n  seen.invoices = seen.invoices || {};\n  seen.invoices[supplier + '|' + number] = { file: row['File'], received: row['Received'] };\n  const keys = Object.keys(seen.invoices);\n  for (let i = 0; i < keys.length - 5000; i++) delete seen.invoices[keys[i]];\n}\n"
+      },
+      "id": "9a811afc-029b-4f4c-a7b4-23719df07f9a",
+      "name": "Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3000,
+        240
+      ]
+    }
+  ],
+  "connections": {
+    "New email with attachment": {
+      "main": [
+        [
+          {
+            "node": "Split attachments",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Split attachments": {
+      "main": [
+        [
+          {
+            "node": "Extract invoice data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract invoice data": {
+      "main": [
+        [
+          {
+            "node": "Read PaperOffice answer",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read PaperOffice answer": {
+      "main": [
+        [
+          {
+            "node": "Still running?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Still running?": {
+      "main": [
+        [
+          {
+            "node": "Wait 10 seconds",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Mark duplicates",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait 10 seconds": {
+      "main": [
+        [
+          {
+            "node": "Check job status",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check job status": {
+      "main": [
+        [
+          {
+            "node": "Read PaperOffice answer",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mark duplicates": {
+      "main": [
+        [
+          {
+            "node": "Build Lexware voucher",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Lexware voucher": {
+      "main": [
+        [
+          {
+            "node": "Send to Lexware?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send to Lexware?": {
+      "main": [
+        [
+          {
+            "node": "Find invoice in Lexware",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Find invoice in Lexware": {
+      "main": [
+        [
+          {
+            "node": "Already in Lexware?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Already in Lexware?": {
+      "main": [
+        [
+          {
+            "node": "New in Lexware?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "New in Lexware?": {
+      "main": [
+        [
+          {
+            "node": "Create voucher",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create voucher": {
+      "main": [
+        [
+          {
+            "node": "Add original file",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Add original file": {
+      "main": [
+        [
+          {
+            "node": "Voucher created?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Voucher created?": {
+      "main": [
+        [
+          {
+            "node": "Attach original file",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Attach original file": {
+      "main": [
+        [
+          {
+            "node": "Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1"
+  }
+}
